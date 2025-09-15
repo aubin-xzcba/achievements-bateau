@@ -1,0 +1,262 @@
+/*
+Minecraft-style Achievements Map
+React single-file component (default export) using Tailwind CSS utility classes.
+
+Features:
+- Nodes (achievements) displayed as boxes with icon + title
+- Dependency lines drawn with SVG between nodes
+- Click to toggle "unlocked" (with animation)
+- State persisted to localStorage
+- Responsive layout with drag-to-pan (mouse)
+
+How to use:
+1) Create a new React project (Vite recommended):
+   npm create vite@latest my-achievements --template react
+   cd my-achievements
+   npm install
+
+2) Add Tailwind CSS (recommended): follow Tailwind + Vite setup (https://tailwindcss.com/docs/guides/vite)
+   Or, if you prefer, replace Tailwind classes with your own CSS.
+
+3) Replace App.jsx (or create Achievements.jsx) with this file's component and import it in main.jsx
+
+4) Run locally: npm run dev
+
+5) Deploy to GitHub Pages:
+   - Create a repo on GitHub and push your code
+   - Use GitHub Actions (recommended) or build and push the `dist` to `gh-pages` branch.
+   - For a quick static site, you can also export `index.html` + assets and enable GitHub Pages from the repo settings.
+
+------
+Component code starts below
+*/
+
+import React, { useEffect, useRef, useState } from "react";
+
+// ----- Sample data: replace with your project's achievements -----
+const SAMPLE_NODES = [
+  { id: "build_hull", title: "Construire la coque", x: 80, y: 60, icon: "🛠️" },
+  { id: "electrical", title: "Alimenter l'élec.", x: 320, y: 40, icon: "🔋" },
+  { id: "install_motor", title: "Installer moteur", x: 320, y: 140, icon: "⚙️", deps: ["build_hull", "electrical"] },
+  { id: "add_gps", title: "Ajouter GPS", x: 560, y: 40, icon: "📡", deps: ["electrical"] },
+  { id: "sea_test", title: "Test en mer", x: 560, y: 200, icon: "🌊", deps: ["install_motor", "add_gps"] },
+  { id: "safety", title: "Sécurité à bord", x: 80, y: 220, icon: "🦺" }
+];
+
+const STORAGE_KEY = "achievements_state_v1";
+
+export default function AchievementsMap({ nodes = SAMPLE_NODES }) {
+  const [unlocked, setUnlocked] = useState(() => loadStateFromStorage());
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const containerRef = useRef(null);
+  const isPanning = useRef(false);
+  const lastMouse = useRef({ x: 0, y: 0 });
+
+  useEffect(() => {
+    saveStateToStorage(unlocked);
+  }, [unlocked]);
+
+  // Panning handlers
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const onMouseDown = (e) => {
+      if (e.button !== 0) return;
+      isPanning.current = true;
+      lastMouse.current = { x: e.clientX, y: e.clientY };
+      el.style.cursor = "grabbing";
+    };
+    const onMouseMove = (e) => {
+      if (!isPanning.current) return;
+      const dx = e.clientX - lastMouse.current.x;
+      const dy = e.clientY - lastMouse.current.y;
+      setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+      lastMouse.current = { x: e.clientX, y: e.clientY };
+    };
+    const onMouseUp = () => {
+      isPanning.current = false;
+      el.style.cursor = "grab";
+    };
+
+    el.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+
+    // Touch events for mobile
+    const onTouchStart = (ev) => {
+      if (ev.touches.length !== 1) return;
+      isPanning.current = true;
+      lastMouse.current = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    };
+    const onTouchMove = (ev) => {
+      if (!isPanning.current || ev.touches.length !== 1) return;
+      const dx = ev.touches[0].clientX - lastMouse.current.x;
+      const dy = ev.touches[0].clientY - lastMouse.current.y;
+      setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+      lastMouse.current = { x: ev.touches[0].clientX, y: ev.touches[0].clientY };
+    };
+    const onTouchEnd = () => { isPanning.current = false; };
+
+    el.addEventListener("touchstart", onTouchStart);
+    window.addEventListener("touchmove", onTouchMove);
+    window.addEventListener("touchend", onTouchEnd);
+
+    el.style.cursor = "grab";
+
+    return () => {
+      el.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      el.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("touchend", onTouchEnd);
+    };
+  }, []);
+
+  function toggleNode(id) {
+    setUnlocked((u) => {
+      const newU = { ...u };
+      newU[id] = !newU[id];
+      return newU;
+    });
+  }
+
+  // Utility: check if all dependencies unlocked
+  function isUnlockedWithDeps(node) {
+    if (unlocked[node.id]) return true;
+    if (!node.deps || node.deps.length === 0) return false;
+    return node.deps.every((d) => unlocked[d]);
+  }
+
+  // Draw lines between nodes as SVG paths
+  function renderLines() {
+    const pairs = [];
+    const nodeMap = Object.fromEntries(nodes.map((n) => [n.id, n]));
+    nodes.forEach((n) => {
+      if (n.deps) {
+        n.deps.forEach((d) => {
+          const from = nodeMap[d];
+          const to = n;
+          if (!from || !to) return;
+          pairs.push({ from, to });
+        });
+      }
+    });
+
+    // We'll compute points and render paths
+    return (
+      <svg className="absolute inset-0 pointer-events-none" preserveAspectRatio="none">
+        {pairs.map((p, i) => {
+          const x1 = p.from.x + 48 + pan.x; // center-ish of node
+          const y1 = p.from.y + 24 + pan.y;
+          const x2 = p.to.x + 48 + pan.x;
+          const y2 = p.to.y + 24 + pan.y;
+
+          // simple cubic curve control points
+          const dx = Math.max(40, Math.abs(x2 - x1) / 2);
+          const c1x = x1 + (x2 > x1 ? dx : -dx);
+          const c1y = y1;
+          const c2x = x2 - (x2 > x1 ? dx : -dx);
+          const c2y = y2;
+
+          const path = `M ${x1} ${y1} C ${c1x} ${c1y} ${c2x} ${c2y} ${x2} ${y2}`;
+
+          // color depends on whether dependency satisfied
+          const allDepsMet = (p.to.deps || []).every((d) => unlocked[d]);
+          const stroke = allDepsMet ? "#f7c948" : "#666";
+
+          return (
+            <path key={i} d={path} fill="none" stroke={stroke} strokeWidth={4} strokeLinecap="round" strokeLinejoin="round" opacity={0.95} />
+          );
+        })}
+      </svg>
+    );
+  }
+
+  return (
+    <div className="w-screen h-screen bg-gradient-to-b from-gray-900 to-gray-800 text-white overflow-hidden">
+      <div className="absolute top-4 left-4 z-20">
+        <h1 className="text-2xl font-bold">Achievements — Projet Bateau</h1>
+        <p className="text-sm text-gray-300 mt-1">Cliquez pour débloquer. Faites glisser la zone pour vous déplacer.</p>
+        <div className="mt-2 space-x-2">
+          <button className="px-3 py-1 rounded bg-green-600 hover:bg-green-500 text-sm" onClick={() => setUnlocked({})}>Réinitialiser</button>
+          <button className="px-3 py-1 rounded bg-blue-600 hover:bg-blue-500 text-sm" onClick={() => { navigator.clipboard?.writeText(JSON.stringify(unlocked)); alert('JSON copié !'); }}>Copier état</button>
+        </div>
+      </div>
+
+      <div ref={containerRef} className="w-full h-full relative">
+        {renderLines()}
+
+        {/* grid background */}
+        <div className="absolute inset-0 opacity-30" style={{ backgroundImage: 'linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px), linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px)', backgroundSize: '40px 40px, 40px 40px' }} />
+
+        {/* nodes */}
+        {nodes.map((n) => {
+          const left = n.x + pan.x;
+          const top = n.y + pan.y;
+          const unlockedState = !!unlocked[n.id];
+          const depsMet = (n.deps || []).every((d) => unlocked[d]);
+
+          return (
+            <div
+              key={n.id}
+              className={`absolute w-40 p-3 rounded-2xl transform transition-all duration-300 shadow-2xl ${unlockedState ? 'scale-105 ring-4 ring-yellow-400' : depsMet ? 'bg-gray-700' : 'bg-gray-800/70'} `}
+              style={{ left, top }}
+              onClick={() => {
+                // Only allow unlocking if deps are met, or allow toggling off
+                if (unlockedState) toggleNode(n.id);
+                else if (depsMet) toggleNode(n.id);
+                else {
+                  // small shake animation to show it's locked
+                  // simple CSS trick: add temporary class
+                  const el = document.getElementById(`node-${n.id}`);
+                  if (el) {
+                    el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }], { duration: 300 });
+                  }
+                }
+              }}
+              id={`node-${n.id}`}
+            >
+              <div className="flex items-center space-x-3">
+                <div className={`w-12 h-12 flex items-center justify-center rounded-md text-xl font-bold text-black bg-white/90 shadow-inner`} style={{ boxShadow: 'inset 0 0 0 2px rgba(0,0,0,0.12)'}}>{n.icon}</div>
+                <div>
+                  <div className="font-semibold text-sm">{n.title}</div>
+                  <div className="text-xs text-gray-300 mt-1">{(n.deps || []).length > 0 ? `Dépendances: ${(n.deps || []).length}` : 'Indépendant'}</div>
+                </div>
+              </div>
+
+              {/* unlocked ribbon */}
+              {unlockedState && (
+                <div className="absolute -top-3 -right-3 bg-yellow-400 text-black rounded-full w-8 h-8 flex items-center justify-center text-xs font-bold shadow-md">✓</div>
+              )}
+            </div>
+          );
+        })}
+
+      </div>
+
+      {/* footer */}
+      <div className="absolute bottom-4 left-4 text-xs text-gray-400">Made for your boat project • Drag to pan • Built with React + Tailwind</div>
+    </div>
+  );
+}
+
+// ----------------- helpers -----------------
+function loadStateFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw);
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveStateToStorage(state) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  } catch (e) {
+    // ignore
+  }
+}
